@@ -25,6 +25,7 @@ import my.unifi.eset.keycloak.piidataencryption.jpa.EncryptedUserEntity;
 import my.unifi.eset.keycloak.piidataencryption.jpa.EncryptedUserProvider;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.jboss.logging.Logger;
+import org.keycloak.connections.jpa.JpaConnectionProvider;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserProvider;
@@ -204,6 +205,22 @@ public final class LogicUtils {
                 encryptUserAttributeEntity(ks, em, uae);
             }
         }
+    }
+
+    /**
+     * Encrypts the users of a freshly imported realm, if user encryption is enabled for it.
+     * Realm import creates users in batch mode, where EncryptedUserProvider#addUser skips them.
+     *
+     * @param ks KeycloakSession
+     * @param realm The imported realm
+     */
+    public static void encryptImportedUserEntities(KeycloakSession ks, RealmModel realm) {
+        if (!isUserEncryptionEnabled(ks, realm)) {
+            return;
+        }
+        EntityManager em = ks.getProvider(JpaConnectionProvider.class).getEntityManager();
+        encryptExistingUserEntities(ks, em, realm);
+        em.flush();
     }
 
     /**

@@ -16,8 +16,11 @@
 package my.unifi.eset.keycloak.piidataencryption.jpa;
 
 import jakarta.persistence.EntityManager;
+import my.unifi.eset.keycloak.piidataencryption.utils.LogicUtils;
 import org.keycloak.connections.jpa.JpaConnectionProvider;
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserProvider;
 import org.keycloak.models.jpa.JpaUserProviderFactory;
 
@@ -27,6 +30,20 @@ public class EncryptedUserProviderFactory extends JpaUserProviderFactory {
     public UserProvider create(KeycloakSession ks) {
         EntityManager em = ks.getProvider(JpaConnectionProvider.class).getEntityManager();
         return new EncryptedUserProvider(ks, em);
+    }
+
+    @Override
+    public void postInit(KeycloakSessionFactory factory) {
+        super.postInit(factory);
+        // Realm import (POST /admin/realms, --import-realm, kc.sh import) creates its users in
+        // batch mode, where EncryptedUserProvider#addUser cannot encrypt them, and fires no
+        // USER events. RealmPostCreateEvent is published once the whole realm, users included,
+        // has been imported (same transaction): encrypt the realm's users at that point.
+        factory.register(event -> {
+            if (event instanceof RealmModel.RealmPostCreateEvent created) {
+                LogicUtils.encryptImportedUserEntities(created.getKeycloakSession(), created.getCreatedRealm());
+            }
+        });
     }
 
     @Override

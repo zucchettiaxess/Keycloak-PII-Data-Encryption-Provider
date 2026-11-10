@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 import my.unifi.eset.keycloak.piidataencryption.utils.LogicUtils;
 import org.jboss.logging.Logger;
+import org.keycloak.connections.jpa.support.EntityManagers;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
@@ -82,6 +83,16 @@ public class EncryptedUserProvider extends JpaUserProvider {
     @Override
     public UserModel addUser(RealmModel realm, String id, String username, boolean addDefaultRoles, boolean addDefaultRequiredActions) {
         UserModel userModel = super.addUser(realm, id, username, addDefaultRoles, addDefaultRequiredActions);
+        if (EntityManagers.isBatchMode()) {
+            // Realm import (POST /admin/realms, --import-realm, kc.sh import) creates users in
+            // batch mode. Since Keycloak 26.5 JpaUserProvider#addUser does not flush there and
+            // batched queries run with FlushModeType.COMMIT, so the lookup below cannot see the
+            // new row (NoResultException, import aborted). The import also sets email and names
+            // only after addUser, so encrypting here would store an encrypted copy without them,
+            // and disabling encryption later would wipe those fields. Leave batched imports to
+            // the normal flow instead.
+            return userModel;
+        }
         LogicUtils.encryptUserEntity(ks, em, LogicUtils.getUserEntity(em, userModel.getId()));
         em.flush();
         logger.debugf("addUser (encrypted): " + username);

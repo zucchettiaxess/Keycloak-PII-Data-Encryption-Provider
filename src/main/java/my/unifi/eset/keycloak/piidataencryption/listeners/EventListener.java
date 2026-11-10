@@ -25,6 +25,7 @@ import org.keycloak.events.Event;
 import org.keycloak.events.EventListenerProvider;
 import org.keycloak.events.EventType;
 import org.keycloak.events.admin.AdminEvent;
+import org.keycloak.events.admin.OperationType;
 import org.keycloak.events.admin.ResourceType;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.UserModel;
@@ -68,6 +69,14 @@ public class EventListener implements EventListenerProvider {
      */
     @Override
     public void onEvent(AdminEvent event, boolean bln) {
+        // Partial import reports each user it adds or overwrites as a REALM admin event with
+        // resource path "users/<id>", not as a USER event.
+        String path = event.getResourcePath();
+        if (event.getResourceType() == ResourceType.REALM && path != null && path.startsWith("users/")
+                && (event.getOperationType() == OperationType.CREATE || event.getOperationType() == OperationType.UPDATE)) {
+            encryptUserWithId(event.getRealmId(), path.split("/")[1]);
+            return;
+        }
         if (event.getResourceType() != ResourceType.USER) {
             return;
         }
