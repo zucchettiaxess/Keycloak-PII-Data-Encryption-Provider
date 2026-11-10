@@ -29,6 +29,7 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.jpa.JpaUserProvider;
+import org.keycloak.models.jpa.entities.UserEntity;
 
 public class EncryptedUserProvider extends JpaUserProvider {
 
@@ -58,6 +59,35 @@ public class EncryptedUserProvider extends JpaUserProvider {
         }
         logger.debugf("getUserByEmail (using hash): " + email);
         return super.getUserByEmail(realm, LogicUtils.hash(email));
+    }
+
+    /**
+     * For encrypted users, compare the email constraint with the email hash.
+     * <p>
+     * {@link JpaUserProvider#getUserByEmail} calls this after loading the user. For an encrypted
+     * user the entity holds the decrypted email (see EntityListener) while email_constraint holds
+     * its hash, so the default implementation sees them as different, sets the constraint to the
+     * clear email and persists the entity: Hibernate then writes the whole row, and username,
+     * email, first and last name end up in clear text in user_entity on every login by email.
+     */
+    @Override
+    protected void ensureEmailConstraint(List<UserEntity> users, RealmModel realm) {
+        UserEntity user = users.get(0);
+        String email = user.getEmail();
+        if (users.size() == 1 && !realm.isDuplicateEmailsAllowed() && email != null && !LogicUtils.isHash(email)
+                && LogicUtils.getEncryptedUserEntity(em, user, false) != null) {
+            String emailHash = LogicUtils.hash(email);
+            if (!emailHash.equals(user.getEmailConstraint())) {
+                // Bulk update of the single column: changing the managed entity would make
+                // Hibernate flush the decrypted values of the whole row.
+                em.createQuery("UPDATE UserEntity u SET u.emailConstraint = :emailConstraint WHERE u.id = :id")
+                        .setParameter("emailConstraint", emailHash)
+                        .setParameter("id", user.getId())
+                        .executeUpdate();
+            }
+            return;
+        }
+        super.ensureEmailConstraint(users, realm);
     }
 
     @Override
