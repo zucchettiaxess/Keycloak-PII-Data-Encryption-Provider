@@ -15,3 +15,13 @@ buildNumber.properties
 .project
 # JDT-specific (Eclipse Java Development Tools)
 .classpath
+
+# Local-only files
+# Claude Code project instructions (kept local, not shared)
+CLAUDE.md
+# IntelliJ IDEA
+.idea/
+# Local dev secrets (KC_PII_ENCKEY, DB passwords) for docker-compose
+.env
+# Local dev stack (each developer keeps their own)
+docker-compose.yml
