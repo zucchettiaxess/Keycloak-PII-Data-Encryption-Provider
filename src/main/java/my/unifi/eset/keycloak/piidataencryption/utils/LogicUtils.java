@@ -26,6 +26,7 @@ import my.unifi.eset.keycloak.piidataencryption.jpa.EncryptedUserProvider;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.jboss.logging.Logger;
 import org.keycloak.connections.jpa.JpaConnectionProvider;
+import org.keycloak.connections.jpa.support.EntityManagers;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserProvider;
@@ -218,10 +219,38 @@ public final class LogicUtils {
         if (!isUserEncryptionEnabled(ks, realm)) {
             return;
         }
-        EntityManager em = ks.getProvider(JpaConnectionProvider.class).getEntityManager();
-        encryptExistingUserEntities(ks, em, realm);
-        em.flush();
+        // Like Keycloak's own import: run in batch mode with a nested EntityManager (queries do
+        // not auto-flush, the caller's persistence context stays untouched) and flush + clear
+        // every IMPORT_BATCH_SIZE users, so a large import does not keep every user managed and
+        // dirty-check all of them before each query.
+        EntityManagers.runInBatch(ks, () -> {
+            EntityManager em = ks.getProvider(JpaConnectionProvider.class).getEntityManager();
+            List<String> userIds = em.createQuery("SELECT u.id FROM UserEntity u WHERE u.realmId = :realmId AND u.serviceAccountClientLink IS NULL ORDER BY u.id", String.class)
+                    .setParameter("realmId", realm.getId())
+                    .getResultList();
+            logger.debugf("Event: IMPORTED_REALM_USERS_ENCRYPTION, Realm: %s, Total Users: %s", realm.getId(), userIds.size());
+            for (int from = 0; from < userIds.size(); from += IMPORT_BATCH_SIZE) {
+                List<String> chunk = userIds.subList(from, Math.min(from + IMPORT_BATCH_SIZE, userIds.size()));
+                for (UserEntity user : em.createQuery("SELECT u FROM UserEntity u WHERE u.id IN :ids", UserEntity.class)
+                        .setParameter("ids", chunk)
+                        .getResultList()) {
+                    encryptUserEntity(ks, em, user);
+                    for (UserAttributeEntity uae : user.getAttributes()) {
+                        encryptUserAttributeEntity(ks, em, uae);
+                        // Queries run in COMMIT flush mode here: flush so the lookup for the
+                        // next value of a multi-valued attribute finds the row just persisted
+                        // instead of creating a second one for the same (user, name).
+                        em.flush();
+                    }
+                }
+                em.flush();
+                em.clear();
+            }
+        }, true);
     }
+
+    // Same chunk size Keycloak uses to flush and clear during realm import.
+    private static final int IMPORT_BATCH_SIZE = 64;
 
     /**
      * Encrypts an existing user entity
