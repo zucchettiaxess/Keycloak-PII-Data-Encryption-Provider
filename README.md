@@ -4,7 +4,7 @@
 
 This provider encrypts user fields & attribute values before storing them to the database and decrypt them upon loading from the database. This is to address data security regulations such as GDPR that require any PII data to not be stored in plain/raw format at rest.
 
-***Important: this provider supports Keycloak version 24.x and above only.*** 
+***Important: this provider supports Keycloak version 26.8.0 and above only.*** 
 
 ## How to install
 
@@ -19,8 +19,10 @@ cd Keycloak-PII-Data-Encryption-Provider
 
 Compile this provider into a JAR file using the following command. JDK 17 or above and Maven are required to be pre-installed on the machine. Make sure to match the `keycloak.version` parameter with the version of the target Keycloak.
 
+> Requires Keycloak **26.8.0 or later**: 26.8.0 changed `LDAPIdentityStoreRegistry#getLdapStore` (new LDAP request metrics argument), so this version no longer compiles against older Keycloak releases.
+
 ```shell 
-mvn clean package -Dkeycloak.version=26.3.0
+mvn clean package -Dkeycloak.version=26.8.2
 ```
 
 Copy paste the packaged JAR file from inside `target` folder into Keycloak `providers` folder. Run `kc.sh build` command to get Keycloak to register this provider.
@@ -31,7 +33,7 @@ Use this method if this provider needs to be pre-packaged inside a custom Keyclo
 
 ```dockerfile
 # ARG defined before FROM in multi-staged Dockerfile is shared among the stages
-ARG KEYCLOAK_VERSION=26.3.0
+ARG KEYCLOAK_VERSION=26.8.2
 
 # Build the provider
 FROM maven:3.8.1-openjdk-17-slim AS keycloak-pii-data-encryption
@@ -100,7 +102,7 @@ This provider also automatically encrypts any user attributes that have their na
 
 ## Known issues/limitations
 
-1. Requires Keycloak version 24.x and above.
+1. Requires Keycloak version 26.8.0 and above.
 2. [Unmanaged attributes](https://www.keycloak.org/docs/latest/server_admin/#_understanding-managed-and-unmanaged-attributes) are not supported.
 3. Encrypted user fields/attributes can only be searched using exact matches. Fuzzy-search is no longer possible for them.
 4. If the encrypted values in the database cannot be decrypted for whatever reason, the hashed value of the fields/attributes will be displayed as-is to the users and clients. This may cause confusions.

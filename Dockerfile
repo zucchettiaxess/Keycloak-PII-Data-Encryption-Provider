@@ -1,4 +1,4 @@
-ARG KEYCLOAK_VERSION=26.3.0
+ARG KEYCLOAK_VERSION=26.8.2
 
 ### Build provider keycloak-pii-data-encryption
 
