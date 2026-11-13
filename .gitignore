@@ -24,4 +24,6 @@ CLAUDE.md
 # Local dev secrets (KC_PII_ENCKEY, DB passwords) for docker-compose
 .env
 # Local dev stack (each developer keeps their own)
-docker-compose.yml
+/docker-compose.yml
+# Python bytecode from the e2e tests
+__pycache__/
