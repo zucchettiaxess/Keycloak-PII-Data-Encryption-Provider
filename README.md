@@ -19,7 +19,7 @@ cd Keycloak-PII-Data-Encryption-Provider
 
 Compile this provider into a JAR file using the following command. JDK 17 or above and Maven are required to be pre-installed on the machine. Make sure to match the `keycloak.version` parameter with the version of the target Keycloak.
 
-> Requires Keycloak **26.8.0 or later**: 26.8.0 changed `LDAPIdentityStoreRegistry#getLdapStore` (new LDAP request metrics argument), so this version no longer compiles against older Keycloak releases.
+> Built and tested against Keycloak **26.8.x**. Users federated from LDAP are encrypted by the same write-time encryption as local users, so the provider no longer overrides Keycloak's LDAP storage provider.
 
 ```shell 
 mvn clean package -Dkeycloak.version=26.8.2
@@ -107,6 +107,22 @@ This provider also automatically encrypts any user attributes that have their na
 3. Encrypted user fields/attributes can only be searched using exact matches. Fuzzy-search is no longer possible for them.
 4. If the encrypted values in the database cannot be decrypted for whatever reason, the hashed value of the fields/attributes will be displayed as-is to the users and clients. This may cause confusions.
 5. If the `pii-data-encryption` validator is added to an existing attribute, the encryption is only applied to existing users' attribute data either when they are updated by the users, or if you switch the `Enable encryption` switch inside `User Entity Encryption` tab off and then on again.
+6. Username, email, first and last name (`USER_ENTITY`) are encrypted whenever the row is written, whatever Keycloak operation changed the user. Encrypted custom attributes are still encrypted only after these events: self-registration, profile update by the user, admin creation or update of a user, realm import and partial import. LDAP sync, identity-provider sync and required actions fire none of them. A multi-valued encrypted attribute keeps a single encrypted value.
+
+## Upgrading from an earlier version
+
+Earlier versions could leave some users in clear text in `USER_ENTITY` (for example after a login with the email address, an admin logout, an LDAP sync or an email verification). This version rewrites such a user encrypted at its next change or user event. To encrypt all of them at once, open the `User Entity Encryption` tab of every encrypted realm and save it again with `Enable encryption` **left on**. Do not switch it off and on again: disabling restores the stored encrypted copies, which for those users may be older than their clear values.
+
+## Running the end-to-end tests
+
+`e2e/` starts Keycloak with the provider built in `target/`, PostgreSQL, OpenLDAP and Mailpit (Docker Compose v2 and Python 3 are the only requirements) and checks that no Keycloak operation leaves personal data in clear text in `USER_ENTITY`, including in the statements sent to the database:
+
+```shell
+mvn clean package
+e2e/run.sh                      # all tests, then the stack is removed
+e2e/run.sh KnownLeaks           # one class (or Class.test_name)
+KEEP=1 e2e/run.sh               # leave the stack running for inspection
+```
 
 ## Your contributions will be very much appreciated
 

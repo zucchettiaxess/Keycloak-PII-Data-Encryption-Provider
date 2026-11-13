@@ -57,6 +57,9 @@ public final class LogicUtils {
      */
     public static void setUserEncryptionEnabled(RealmModel realm, boolean enabled) {
         realm.setAttribute("users.encrypt", enabled);
+        // Writes later in this request follow the new setting at once (e.g. disabling must not
+        // let a user flushed after the decryption sweep be hashed again).
+        EncryptionContext.setOverride(realm.getId(), enabled);
         logger.debugf("Event: ENCRYPTION_%s, Realm: %s", enabled ? "ENABLED" : "DISABLED", realm.getId());
     }
 
@@ -209,8 +212,10 @@ public final class LogicUtils {
     }
 
     /**
-     * Encrypts the users of a freshly imported realm, if user encryption is enabled for it.
-     * Realm import creates users in batch mode, where EncryptedUserProvider#addUser skips them.
+     * Encrypts the PII attributes of the users of a freshly imported realm, if user encryption
+     * is enabled for it. The user rows themselves are already hashed by EncryptOnWriteListener
+     * when the import inserts them; attributes are not covered by it yet and the import fires no
+     * USER events.
      *
      * @param ks KeycloakSession
      * @param realm The imported realm
@@ -225,7 +230,8 @@ public final class LogicUtils {
         // dirty-check all of them before each query.
         EntityManagers.runInBatch(ks, () -> {
             EntityManager em = ks.getProvider(JpaConnectionProvider.class).getEntityManager();
-            List<String> userIds = em.createQuery("SELECT u.id FROM UserEntity u WHERE u.realmId = :realmId AND u.serviceAccountClientLink IS NULL ORDER BY u.id", String.class)
+            List<String> userIds = em.createQuery("SELECT u.id FROM UserEntity u WHERE u.realmId = :realmId AND u.serviceAccountClientLink IS NULL"
+                    + " AND EXISTS (SELECT a.id FROM UserAttributeEntity a WHERE a.user = u) ORDER BY u.id", String.class)
                     .setParameter("realmId", realm.getId())
                     .getResultList();
             logger.debugf("Event: IMPORTED_REALM_USERS_ENCRYPTION, Realm: %s, Total Users: %s", realm.getId(), userIds.size());
@@ -234,7 +240,6 @@ public final class LogicUtils {
                 for (UserEntity user : em.createQuery("SELECT u FROM UserEntity u WHERE u.id IN :ids", UserEntity.class)
                         .setParameter("ids", chunk)
                         .getResultList()) {
-                    encryptUserEntity(ks, em, user);
                     for (UserAttributeEntity uae : user.getAttributes()) {
                         encryptUserAttributeEntity(ks, em, uae);
                         // Queries run in COMMIT flush mode here: flush so the lookup for the
@@ -253,7 +258,11 @@ public final class LogicUtils {
     private static final int IMPORT_BATCH_SIZE = 64;
 
     /**
-     * Encrypts an existing user entity
+     * Encrypts an existing user entity that is stored in clear text.
+     * <p>
+     * Only used when encryption is enabled on a realm that already has users (bulk JPQL
+     * update, so EncryptOnWriteListener is not involved); every later write of the user is
+     * handled by EncryptOnWriteListener.
      *
      * @param ks KeycloakSession
      * @param em EntityManager

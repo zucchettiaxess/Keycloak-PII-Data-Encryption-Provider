@@ -54,10 +54,10 @@ public class EventListenerFactory implements EventListenerProviderFactory {
 
     @Override
     public void postInit(KeycloakSessionFactory ksf) {
-        // Realm import (POST /admin/realms, --import-realm, kc.sh import) creates its users in
-        // batch mode, where EncryptedUserProvider#addUser cannot encrypt them, and fires no
-        // USER events. RealmPostCreateEvent is published once the whole realm, users included,
-        // has been imported (same transaction): encrypt the realm's users at that point.
+        // Realm import (POST /admin/realms, --import-realm, kc.sh import) fires no USER events.
+        // Its user rows are hashed by EncryptOnWriteListener when inserted; their PII attributes
+        // are encrypted here, once RealmPostCreateEvent is published (the whole realm, users
+        // included, has been imported in the same transaction).
         // Registered here because this factory exists once, while the user provider factory is
         // loaded twice (ids "jpa" and "jpa-encrypted").
         ksf.register(event -> {

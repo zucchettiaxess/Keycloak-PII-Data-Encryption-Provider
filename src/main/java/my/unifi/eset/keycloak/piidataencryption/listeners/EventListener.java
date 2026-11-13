@@ -16,6 +16,7 @@
 package my.unifi.eset.keycloak.piidataencryption.listeners;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import my.unifi.eset.keycloak.piidataencryption.utils.LogicUtils;
 import jakarta.persistence.EntityManager;
@@ -34,8 +35,11 @@ import org.keycloak.models.jpa.entities.UserEntity;
 
 /**
  * Listens to REGISTER & UPDATE_PROFILE user events as well as CREATE & UPDATE
- * admin event on USER resource to perform encryption of UserEntity &
- * UserAttributeEntity
+ * admin event on USER resource to perform encryption of PII UserAttributeEntity
+ * values.
+ * <p>
+ * USER_ENTITY itself (username, email, first and last name) is encrypted on every write by
+ * EncryptOnWriteListener and needs no event.
  *
  * @author MLukman (https://github.com/MLukman)
  */
@@ -83,8 +87,14 @@ public class EventListener implements EventListenerProvider {
         String userId = switch (event.getOperationType()) {
             case CREATE -> {
                 try {
-                    String username = (new ObjectMapper()).readTree(event.getRepresentation()).get("username").asText();
-                    UserModel user = session.users().getUserByUsername(session.realms().getRealm(event.getRealmId()), username);
+                    JsonNode username = (new ObjectMapper()).readTree(event.getRepresentation()).get("username");
+                    if (username == null) {
+                        // e.g. "email as username" realms: the representation has no username,
+                        // but the resource path is users/<id>
+                        String[] segments = event.getResourcePath().split("/");
+                        yield segments.length > 1 ? segments[1] : null;
+                    }
+                    UserModel user = session.users().getUserByUsername(session.realms().getRealm(event.getRealmId()), username.asText());
                     yield (user != null ? user.getId() : null);
                 } catch (JsonProcessingException ex) {
                     yield null;
@@ -110,7 +120,15 @@ public class EventListener implements EventListenerProvider {
             EntityManager em = session.getProvider(JpaConnectionProvider.class).getEntityManager();
             UserEntity userEntity = LogicUtils.getUserEntity(em, userId);
             if (userEntity != null) {
-                LogicUtils.encryptUserEntity(session, em, userEntity);
+                // Writes are hashed by EncryptOnWriteListener. A row still stored in clear (left by
+                // an older version of this provider, or written before encryption was enabled) is
+                // only rewritten when something in it changes, so repair it here.
+                String storedUsername = em.createQuery("SELECT u.username FROM UserEntity u WHERE u.id = :id", String.class)
+                        .setParameter("id", userId).getSingleResult();
+                if (storedUsername != null && !LogicUtils.isHash(storedUsername)
+                        && userEntity.getServiceAccountClientLink() == null) {
+                    LogicUtils.encryptUserEntity(session, em, userEntity);
+                }
                 for (UserAttributeEntity uae : userEntity.getAttributes()) {
                     LogicUtils.encryptUserAttributeEntity(session, em, uae);
                 }
