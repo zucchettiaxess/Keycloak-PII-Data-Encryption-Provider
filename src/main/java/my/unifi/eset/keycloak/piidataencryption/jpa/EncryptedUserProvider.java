@@ -28,6 +28,7 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.jpa.JpaUserProvider;
+import org.keycloak.models.jpa.entities.UserEntity;
 
 public class EncryptedUserProvider extends JpaUserProvider {
 
@@ -59,6 +60,35 @@ public class EncryptedUserProvider extends JpaUserProvider {
         return super.getUserByEmail(realm, LogicUtils.hash(email));
     }
 
+    /**
+     * For encrypted users, compare the email constraint with the email hash.
+     * <p>
+     * {@link JpaUserProvider#getUserByEmail} calls this after loading the user. For an encrypted
+     * user the entity holds the decrypted email (see EntityListener) while email_constraint holds
+     * its hash, so the default implementation sees them as different, sets the constraint to the
+     * clear email and persists the entity: Hibernate then writes the whole row, and username,
+     * email, first and last name end up in clear text in user_entity on every login by email.
+     */
+    @Override
+    protected void ensureEmailConstraint(List<UserEntity> users, RealmModel realm) {
+        UserEntity user = users.get(0);
+        String email = user.getEmail();
+        if (users.size() == 1 && !realm.isDuplicateEmailsAllowed() && email != null && !LogicUtils.isHash(email)
+                && LogicUtils.getEncryptedUserEntity(em, user, false) != null) {
+            String emailHash = LogicUtils.hash(email);
+            if (!emailHash.equals(user.getEmailConstraint())) {
+                // Bulk update of the single column: changing the managed entity would make
+                // Hibernate flush the decrypted values of the whole row.
+                em.createQuery("UPDATE UserEntity u SET u.emailConstraint = :emailConstraint WHERE u.id = :id")
+                        .setParameter("emailConstraint", emailHash)
+                        .setParameter("id", user.getId())
+                        .executeUpdate();
+            }
+            return;
+        }
+        super.ensureEmailConstraint(users, realm);
+    }
+
     @Override
     public Stream<UserModel> searchForUserStream(RealmModel realm, Map<String, String> attributes, Integer firstResult, Integer maxResults) {
         List<UserModel> results = super.searchForUserStream(realm, attributes, firstResult, maxResults).toList();
@@ -79,13 +109,7 @@ public class EncryptedUserProvider extends JpaUserProvider {
         return super.searchForUserStream(realm, attributes, firstResult, maxResults);
     }
 
-    @Override
-    public UserModel addUser(RealmModel realm, String id, String username, boolean addDefaultRoles, boolean addDefaultRequiredActions) {
-        UserModel userModel = super.addUser(realm, id, username, addDefaultRoles, addDefaultRequiredActions);
-        LogicUtils.encryptUserEntity(ks, em, LogicUtils.getUserEntity(em, userModel.getId()));
-        em.flush();
-        logger.debugf("addUser (encrypted): " + username);
-        return userModel;
-    }
+    // No addUser override: new users are hashed and their encrypted copy written by
+    // EncryptOnWriteListener when the row is inserted, in every mode (including batched imports).
 
 }

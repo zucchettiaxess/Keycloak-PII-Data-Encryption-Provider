@@ -16,11 +16,13 @@
 
 package my.unifi.eset.keycloak.piidataencryption.listeners;
 
+import my.unifi.eset.keycloak.piidataencryption.utils.LogicUtils;
 import org.keycloak.Config;
 import org.keycloak.events.EventListenerProvider;
 import org.keycloak.events.EventListenerProviderFactory;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.models.RealmModel;
 
 /**
  * Registers event listener pii-data-encryption to be in the event listeners 
@@ -52,6 +54,17 @@ public class EventListenerFactory implements EventListenerProviderFactory {
 
     @Override
     public void postInit(KeycloakSessionFactory ksf) {
+        // Realm import (POST /admin/realms, --import-realm, kc.sh import) fires no USER events.
+        // Its user rows are hashed by EncryptOnWriteListener when inserted; their PII attributes
+        // are encrypted here, once RealmPostCreateEvent is published (the whole realm, users
+        // included, has been imported in the same transaction).
+        // Registered here because this factory exists once, while the user provider factory is
+        // loaded twice (ids "jpa" and "jpa-encrypted").
+        ksf.register(event -> {
+            if (event instanceof RealmModel.RealmPostCreateEvent created) {
+                LogicUtils.encryptImportedUserEntities(created.getKeycloakSession(), created.getCreatedRealm());
+            }
+        });
     }
 
 }

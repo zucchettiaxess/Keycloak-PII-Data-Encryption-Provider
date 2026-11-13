@@ -25,6 +25,8 @@ import my.unifi.eset.keycloak.piidataencryption.jpa.EncryptedUserEntity;
 import my.unifi.eset.keycloak.piidataencryption.jpa.EncryptedUserProvider;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.jboss.logging.Logger;
+import org.keycloak.connections.jpa.JpaConnectionProvider;
+import org.keycloak.connections.jpa.support.EntityManagers;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserProvider;
@@ -55,6 +57,9 @@ public final class LogicUtils {
      */
     public static void setUserEncryptionEnabled(RealmModel realm, boolean enabled) {
         realm.setAttribute("users.encrypt", enabled);
+        // Writes later in this request follow the new setting at once (e.g. disabling must not
+        // let a user flushed after the decryption sweep be hashed again).
+        EncryptionContext.setOverride(realm.getId(), enabled);
         logger.debugf("Event: ENCRYPTION_%s, Realm: %s", enabled ? "ENABLED" : "DISABLED", realm.getId());
     }
 
@@ -207,7 +212,57 @@ public final class LogicUtils {
     }
 
     /**
-     * Encrypts an existing user entity
+     * Encrypts the PII attributes of the users of a freshly imported realm, if user encryption
+     * is enabled for it. The user rows themselves are already hashed by EncryptOnWriteListener
+     * when the import inserts them; attributes are not covered by it yet and the import fires no
+     * USER events.
+     *
+     * @param ks KeycloakSession
+     * @param realm The imported realm
+     */
+    public static void encryptImportedUserEntities(KeycloakSession ks, RealmModel realm) {
+        if (!isUserEncryptionEnabled(ks, realm)) {
+            return;
+        }
+        // Like Keycloak's own import: run in batch mode with a nested EntityManager (queries do
+        // not auto-flush, the caller's persistence context stays untouched) and flush + clear
+        // every IMPORT_BATCH_SIZE users, so a large import does not keep every user managed and
+        // dirty-check all of them before each query.
+        EntityManagers.runInBatch(ks, () -> {
+            EntityManager em = ks.getProvider(JpaConnectionProvider.class).getEntityManager();
+            List<String> userIds = em.createQuery("SELECT u.id FROM UserEntity u WHERE u.realmId = :realmId AND u.serviceAccountClientLink IS NULL"
+                    + " AND EXISTS (SELECT a.id FROM UserAttributeEntity a WHERE a.user = u) ORDER BY u.id", String.class)
+                    .setParameter("realmId", realm.getId())
+                    .getResultList();
+            logger.debugf("Event: IMPORTED_REALM_USERS_ENCRYPTION, Realm: %s, Total Users: %s", realm.getId(), userIds.size());
+            for (int from = 0; from < userIds.size(); from += IMPORT_BATCH_SIZE) {
+                List<String> chunk = userIds.subList(from, Math.min(from + IMPORT_BATCH_SIZE, userIds.size()));
+                for (UserEntity user : em.createQuery("SELECT u FROM UserEntity u WHERE u.id IN :ids", UserEntity.class)
+                        .setParameter("ids", chunk)
+                        .getResultList()) {
+                    for (UserAttributeEntity uae : user.getAttributes()) {
+                        encryptUserAttributeEntity(ks, em, uae);
+                        // Queries run in COMMIT flush mode here: flush so the lookup for the
+                        // next value of a multi-valued attribute finds the row just persisted
+                        // instead of creating a second one for the same (user, name).
+                        em.flush();
+                    }
+                }
+                em.flush();
+                em.clear();
+            }
+        }, true);
+    }
+
+    // Same chunk size Keycloak uses to flush and clear during realm import.
+    private static final int IMPORT_BATCH_SIZE = 64;
+
+    /**
+     * Encrypts an existing user entity that is stored in clear text.
+     * <p>
+     * Only used when encryption is enabled on a realm that already has users (bulk JPQL
+     * update, so EncryptOnWriteListener is not involved); every later write of the user is
+     * handled by EncryptOnWriteListener.
      *
      * @param ks KeycloakSession
      * @param em EntityManager

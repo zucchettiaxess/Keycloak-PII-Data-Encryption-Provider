@@ -1,0 +1,55 @@
+# End-to-end test stack: Keycloak + the provider JAR from ../target, PostgreSQL, OpenLDAP and
+# Mailpit. Started and stopped by run.sh; ports are offset so it can run next to a dev stack.
+# KC_PII_ENCKEY below is a fixed TEST key (32 bytes): never reuse it anywhere else.
+name: pii-e2e
+
+services:
+  postgres:
+    image: postgres:16
+    # Log every INSERT/UPDATE/DELETE with its bound parameters: the tests check that no clear
+    # PII is ever written to user_entity, not even transiently (what the WAL would record).
+    command: ["postgres", "-c", "log_statement=mod", "-c", "log_parameter_max_length=-1"]
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  ldap:
+    image: bitnamilegacy/openldap:2.6
+    environment:
+      LDAP_ROOT: dc=example,dc=org
+      LDAP_ADMIN_USERNAME: admin
+      LDAP_ADMIN_PASSWORD: admin
+      LDAP_USERS: anna.bianchi
+      LDAP_PASSWORDS: Ldap-Pw-1
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "18025:8025"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION:-26.8.2}
+    command: start-dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_FEATURES: declarative-ui
+      KC_PII_ENCKEY: e2e-test-key-0123456789abcdef012
+      KC_LOG_LEVEL: INFO
+    ports:
+      - "18180:8080"
+    volumes:
+      - ../target/keycloak-pii-data-encryption.jar:/opt/keycloak/providers/keycloak-pii-data-encryption.jar:ro

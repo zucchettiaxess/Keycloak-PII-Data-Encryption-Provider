@@ -15,6 +15,7 @@
  */
 package my.unifi.eset.keycloak.piidataencryption.listeners;
 
+import my.unifi.eset.keycloak.piidataencryption.utils.EncryptionContext;
 import my.unifi.eset.keycloak.piidataencryption.utils.EncryptionUtils;
 import my.unifi.eset.keycloak.piidataencryption.utils.LogicUtils;
 import jakarta.persistence.EntityManager;
@@ -50,6 +51,11 @@ public class EntityListener implements Integrator, PreLoadEventListener {
     public void integrate(Metadata metadata, BootstrapContext bootstrapContext, SessionFactoryImplementor sessionFactory) {
         EventListenerRegistry eventListenerRegistry = sessionFactory.getServiceRegistry().getService(EventListenerRegistry.class);
         eventListenerRegistry.appendListeners(EventType.PRE_LOAD, this);
+        EncryptOnWriteListener encryptOnWrite = new EncryptOnWriteListener();
+        eventListenerRegistry.appendListeners(EventType.PRE_INSERT, encryptOnWrite);
+        eventListenerRegistry.appendListeners(EventType.PRE_UPDATE, encryptOnWrite);
+        eventListenerRegistry.appendListeners(EventType.POST_INSERT, encryptOnWrite);
+        eventListenerRegistry.appendListeners(EventType.POST_UPDATE, encryptOnWrite);
     }
 
     @Override
@@ -73,21 +79,49 @@ public class EntityListener implements Integrator, PreLoadEventListener {
     protected void handlePreLoadEventUserEntity(PreLoadEvent ple, UserEntity ue) {
         EntityManager em = ple.getSession().getSessionFactory().createEntityManager();
         EncryptedUserEntity eue = LogicUtils.getEncryptedUserEntity(em, ue, false);
-        if (eue != null) {
-            Object[] states = ple.getState();
-            Map<String, Integer> cols = collectColumnIndices(ple.getPersister().getEntityMetamodel().getPropertyNames());
-            if (!LogicUtils.isHash((String) states[cols.get("username")])) {
-                // skip because the entity is already decrypted
-                logger.debugf("Event: USER_ALREADY_DECRYPTED, Realm: %s, User: %s", states[cols.get("realmId")], ue.getId());
-            } else if (validateHashValueVsEncryptedValue((String) states[cols.get("username")], eue.getUsername())) {
-                logger.debugf("Event: USER_DECRYPTION, Realm: %s, User: %s", states[cols.get("realmId")], ue.getId());
-                states[cols.get("username")] = EncryptionUtils.decryptValue(eue.getUsername());
-                states[cols.get("email")] = EncryptionUtils.decryptValue(eue.getEmail());
-                states[cols.get("firstName")] = EncryptionUtils.decryptValue(eue.getFirstName());
-                states[cols.get("lastName")] = EncryptionUtils.decryptValue(eue.getLastName());
-            } else {
-                throw new DecryptionFailureException((String) states[cols.get("realmId")], ue.getId());
+        Object[] states = ple.getState();
+        Map<String, Integer> cols = collectColumnIndices(ple.getPersister().getEntityMetamodel().getPropertyNames());
+        String realmId = (String) states[cols.get("realmId")];
+        String[] names = {"username", "email", "firstName", "lastName"};
+        String[] ciphers = eue == null ? new String[4]
+                : new String[]{eue.getUsername(), eue.getEmail(), eue.getFirstName(), eue.getLastName()};
+        boolean anyHash = false;
+        boolean allDecrypted = true;
+        boolean allHashes = true;
+        // Each column is decrypted on its own, and only when its ciphertext matches the stored
+        // hash: a partial or stale encrypted row can never replace a value with a wrong one.
+        for (int c = 0; c < names.length; c++) {
+            int i = cols.get(names[c]);
+            if (!(states[i] instanceof String stored)) {
+                continue;
             }
+            if (!LogicUtils.isHash(stored)) {
+                allHashes = false;
+                continue;
+            }
+            anyHash = true;
+            if (ciphers[c] != null && validateHashValueVsEncryptedValue(stored, ciphers[c])) {
+                states[i] = EncryptionUtils.decryptValue(ciphers[c]);
+            } else {
+                allDecrypted = false;
+            }
+        }
+        if (!anyHash) {
+            return; // stored in clear (encryption off for this user)
+        }
+        if (allDecrypted) {
+            logger.debugf("Event: USER_DECRYPTION, Realm: %s, User: %s", realmId, ue.getId());
+            // Any later write of this user in the request must store hashes again.
+            EncryptionContext.markEncryptedUser(ue.getId());
+            return;
+        }
+        // Some hashes could not be decrypted. Without an encrypted row, a clear value that merely
+        // looks like a hash (e.g. a 40-hex username) must not be taken for one: require every
+        // value to be a hash and the realm to have encryption on.
+        if (eue != null || (allHashes && EncryptionContext.isRealmEncrypted(ple.getSession(), realmId))) {
+            // Those columns stay hashes: writes keep them as they are (EncryptOnWriteListener).
+            EncryptionContext.markUndecryptableUser(ue.getId());
+            new DecryptionFailureException(realmId, ue.getId()).outputToLog(logger);
         }
     }
 
